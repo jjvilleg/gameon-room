@@ -12,14 +12,21 @@
     </featureManager>
 
     <!-- To access this server from a remote client add a host attribute to the following element, e.g. host="*" -->
-    <httpEndpoint host="*" httpPort="9080" httpsPort="9445" id="defaultHttpEndpoint"/>
+    <httpEndpoint host="*" httpPort="9080" httpsPort="9443" id="defaultHttpEndpoint"/>
 
     <keyStore id="defaultKeyStore" password="testOnlyKeystore"/>
+    <keyStore id="defaultTrustStore" location="truststore.jks" password="truststore"/>
 
     <!-- Our key that allows us to register rooms -->
     <jndiEntry jndiName="registrationSecret" value="${env.REGISTRATION_SECRET}"/>
 
-	<logging traceSpecification="*=info"/>
+    <!-- Location of concierge -->
+    <jndiEntry jndiName="conciergeLocation" value="${env.service_concierge}"/>
+
+    <!-- Location of this service -->
+    <jndiEntry jndiName="thisLocation" value="${env.service_room}"/>
+
+    <logging traceSpecification="*=info:net.wasdev.gameon.*=all" copySystemStreams="false"/>
 
 	<!-- This is required to prevent the web apps from being lazily loaded -->
 	<webContainer deferServletLoad="false"/>

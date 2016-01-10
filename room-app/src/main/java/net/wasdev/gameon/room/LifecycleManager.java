@@ -26,7 +26,6 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.annotation.Resource;
 import javax.enterprise.concurrent.ManagedScheduledExecutorService;
 import javax.enterprise.context.ApplicationScoped;
 import javax.json.Json;
@@ -35,7 +34,6 @@ import javax.json.JsonObject;
 import javax.json.JsonObjectBuilder;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
-import javax.servlet.ServletException;
 import javax.websocket.Endpoint;
 import javax.websocket.Session;
 import javax.websocket.server.ServerApplicationConfig;
@@ -58,10 +56,9 @@ import net.wasdev.gameon.room.engine.meta.ExitDesc;
  */
 @ApplicationScoped
 public class LifecycleManager implements ServerApplicationConfig {
-    private static final String ENV_CONCIERGE_SVC = "service_concierge";
-    private static final String ENV_ROOM_SVC = "service_room";
     private String conciergeLocation = null;
-    private String registrationSecret;
+    private String registrationSecret = null;
+    private String thisLocation = null;
 
     Engine e = Engine.getEngine();
 
@@ -251,18 +248,19 @@ public class LifecycleManager implements ServerApplicationConfig {
      */
     private class ReRegisterRoomsForeverThread implements Runnable {
         private Collection<Room> rooms;
-        private String registrationSecret;
-
-        public ReRegisterRoomsForeverThread(Collection<Room> rooms, String registrationSecret) {
+    
+        public ReRegisterRoomsForeverThread(Collection<Room> rooms) {
             this.rooms = rooms;
-            this.registrationSecret = registrationSecret;
         }
 
         @Override
         public void run() {
             try{
-                Client client = ClientBuilder.newClient();
+                ClientBuilder cb = ClientBuilder.newBuilder()
+                        .property("com.ibm.ws.jaxrs.client.ssl.config", "defaultSSLConfig");
 
+                Client client = cb.build();
+                
                 // add the apikey handler for the registration request.
                 ApiKey apikey = new ApiKey("roomRegistration", registrationSecret);
                 client.register(apikey);
@@ -273,12 +271,7 @@ public class LifecycleManager implements ServerApplicationConfig {
                     Invocation.Builder builder = target.request(MediaType.APPLICATION_JSON);
 
                     net.wasdev.gameon.room.common.Room commonRoom = new net.wasdev.gameon.room.common.Room(room.getRoomId());
-                    String endPoint = System.getProperty(ENV_ROOM_SVC, System.getenv(ENV_ROOM_SVC));
-                    if (endPoint == null) {
-                        throw new RuntimeException("The location for the room service cold not be "
-                                + "found in a system property or environment variable named : " + ENV_ROOM_SVC);
-                    }
-                    commonRoom.setAttribute("endPoint", endPoint + "/ws/" + room.getRoomId());
+                    commonRoom.setAttribute("endPoint", thisLocation + "/ws/" + room.getRoomId());
                     commonRoom.setAttribute("startLocation", "" + room.isStarterLocation());
                     List<net.wasdev.gameon.room.common.Exit> exits = new ArrayList<net.wasdev.gameon.room.common.Exit>();
                     for (ExitDesc ed : room.getExits()) {
@@ -308,24 +301,34 @@ public class LifecycleManager implements ServerApplicationConfig {
                 System.out.println("Reregister thread caught "+e.getMessage());
                 e.printStackTrace();
                 //by rethrowing here, the scheduled executor will shut us down.
-                throw e;
             }
         }
     }
 
-    private void getConfig() throws ServletException {
-        conciergeLocation = System.getProperty(ENV_CONCIERGE_SVC, System.getenv(ENV_CONCIERGE_SVC));
-        if (conciergeLocation == null) {
-            throw new ServletException("The location for the concierge service cold not be "
-                    + "found in a system property or environment variable named : " + ENV_CONCIERGE_SVC);
+    private boolean getConfig() {
+        try {
+            conciergeLocation = (String) new InitialContext().lookup("conciergeLocation");
+            System.out.println("CONFIG: conciergeLocation = " + conciergeLocation);
+        } catch (NamingException e1) {
         }
+
+        // BUG in Liberty as of 8.5.5.8, WebSocket URLs are normalized incorrectly.
+//        try {
+//            thisLocation = (String) new InitialContext().lookup("thisLocation");
+//            System.out.println("CONFIG: thisLocation = " + thisLocation);
+//        } catch (NamingException e1) {
+//        }
+
+            thisLocation = System.getenv("service_room");
+            System.out.println("CONFIG: thisLocation = " + thisLocation);
+
         try {
             registrationSecret = (String) new InitialContext().lookup("registrationSecret");
+            System.out.println("CONFIG: registrationSecret = " + (registrationSecret == null ? "null" : "***"));
         } catch (NamingException e) {
         }
-        if (registrationSecret == null) {
-            throw new ServletException("registrationSecret was not found, check server.xml/server.env");
-        }
+        
+        return conciergeLocation != null && thisLocation != null && registrationSecret != null;
     }
 
     private static class RoomWSConfig extends ServerEndpointConfig.Configurator {
@@ -347,26 +350,19 @@ public class LifecycleManager implements ServerApplicationConfig {
     }
 
     private Set<ServerEndpointConfig> registerRooms(Collection<Room> rooms) {
-        Client client = ClientBuilder.newClient();
 
-        // add the apikey handler for the registration request.
-        ApiKey apikey = new ApiKey("roomRegistration", registrationSecret);
-        client.register(apikey);
-
-        WebTarget target = client.target(conciergeLocation);
+        if ( !getConfig() ) {
+            // make sure parent attributes are set!
+            throw new RuntimeException("MISSING configuration attributes!");
+        }
+        
         Set<ServerEndpointConfig> endpoints = new HashSet<ServerEndpointConfig>();
         for (Room room : rooms) {
-            System.out.println("Registering room " + room.getRoomName());
-            Invocation.Builder builder = target.request(MediaType.APPLICATION_JSON);
 
             net.wasdev.gameon.room.common.Room commonRoom = new net.wasdev.gameon.room.common.Room(room.getRoomId());
-            String endPoint = System.getProperty(ENV_ROOM_SVC, System.getenv(ENV_ROOM_SVC));
-            if (endPoint == null) {
-                throw new RuntimeException("The location for the room service cold not be "
-                        + "found in a system property or environment variable named : " + ENV_ROOM_SVC);
-            }
-            commonRoom.setAttribute("endPoint", endPoint + "/ws/" + room.getRoomId());
+            commonRoom.setAttribute("endPoint", thisLocation + "/ws/" + room.getRoomId());
             commonRoom.setAttribute("startLocation", "" + room.isStarterLocation());
+
             List<net.wasdev.gameon.room.common.Exit> exits = new ArrayList<net.wasdev.gameon.room.common.Exit>();
             for (ExitDesc ed : room.getExits()) {
                 if (ed.handler.isVisible()) {
@@ -384,24 +380,12 @@ public class LifecycleManager implements ServerApplicationConfig {
 
             endpoints.add(ServerEndpointConfig.Builder.create(RoomWS.class, "/ws/" + room.getRoomId())
                     .configurator(config).build());
-
-            Response response = builder.post(Entity.json(commonRoom));
-            try {
-                if (Status.OK.getStatusCode() == response.getStatus()) {
-                    String resp = response.readEntity(String.class);
-                    System.out.println("Registration returned " + resp);
-                } else {
-                    System.out.println("Error registering room provider : " + room.getRoomName() + " : status code "
-                            + response.getStatus());
-                }
-            } finally {
-                response.close();
-            }
         }
+        
         try{
             ManagedScheduledExecutorService executor;
             executor = (ManagedScheduledExecutorService) new InitialContext().lookup("concurrent/execSvc");
-            ReRegisterRoomsForeverThread r = new ReRegisterRoomsForeverThread(rooms,registrationSecret);
+            ReRegisterRoomsForeverThread r = new ReRegisterRoomsForeverThread(rooms);
             executor.scheduleAtFixedRate(r, 10, 10, TimeUnit.SECONDS);
         }catch(Exception e){
             System.out.println("Error creating room reregistrator.. "+e.getMessage());
@@ -413,15 +397,7 @@ public class LifecycleManager implements ServerApplicationConfig {
 
     @Override
     public Set<ServerEndpointConfig> getEndpointConfigs(Set<Class<? extends Endpoint>> endpointClasses) {
-        try {
-            getConfig();
-            return registerRooms(e.getRooms());
-        } catch (ServletException e) {
-            System.err.println("Error building endpoint configs for ro");
-            e.printStackTrace();
-            throw new RuntimeException(e);
-        }
-
+        return registerRooms(e.getRooms());
     }
 
     @Override

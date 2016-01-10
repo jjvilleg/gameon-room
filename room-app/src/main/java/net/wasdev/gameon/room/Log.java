@@ -15,6 +15,7 @@
  *******************************************************************************/
 package net.wasdev.gameon.room;
 
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class Log {
@@ -24,5 +25,17 @@ public class Log {
     public static void endPoint(Object source, String message) {
         System.out.println(message);
         log.fine(String.format(log_format, source == null ? "null" : System.identityHashCode(source), message));
+    }
+    
+    public static void log(Level level, Object source, String message, Object... args) {
+        if (log.isLoggable(level)) {
+            log.log(level, message, args);
+        }
+    }
+
+    public static void log(Level level, Object source, String message, Throwable thrown) {
+        if (log.isLoggable(level)) {
+            log.log(level, message, thrown);
+        }
     }
 }
